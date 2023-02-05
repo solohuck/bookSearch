@@ -1,120 +1,107 @@
 const { AuthenticationError } = require('apollo-server-express');
-const { User, Thought } = require('../models');
+const { User, Book } = require("./models");
 const { signToken } = require('../utils/auth');
 
 const resolvers = {
   Query: {
-    users: async () => {
-      return User.find().populate('thoughts');
-    },
-    user: async (parent, { username }) => {
-      return User.findOne({ username }).populate('thoughts');
-    },
-    thoughts: async (parent, { username }) => {
-      const params = username ? { username } : {};
-      return Thought.find(params).sort({ createdAt: -1 });
-    },
-    thought: async (parent, { thoughtId }) => {
-      return Thought.findOne({ _id: thoughtId });
-    },
+    // `me` resolver fetches the current user information.
     me: async (parent, args, context) => {
+      // Check if the user is authenticated.
       if (context.user) {
-        return User.findOne({ _id: context.user._id }).populate('thoughts');
+        // Find the user and populate the saved books.
+        return await User.findOne({ _id: context.user._Id }).populate('books')
       }
+      // If the user is not authenticated, throw an error.
       throw new AuthenticationError('You need to be logged in!');
     },
   },
-
   Mutation: {
-    addUser: async (parent, { username, email, password }) => {
-      const user = await User.create({ username, email, password });
-      const token = signToken(user);
-      return { token, user };
-    },
+    // `login` resolver authenticates the user.
     login: async (parent, { email, password }) => {
-      const user = await User.findOne({ email });
-
-      if (!user) {
-        throw new AuthenticationError('No user found with this email address');
+      try {
+        // Find the user with the given email address.
+        const user = await User.findOne({ email });
+    
+        if (!user) {
+          throw new Error('No user found with this email address');
+        }
+        // Check if the given password is correct.
+        const correctPw = await user.isCorrectPassword(password);
+    
+        if (!correctPw) {
+          throw new Error('Incorrect credentials');
+        }
+        // Sign a token for the user.
+        const token = signToken(user);
+    
+        return { token, user };
+      } catch (error) {
+        console.error(error);
+        throw error;
       }
-
-      const correctPw = await user.isCorrectPassword(password);
-
-      if (!correctPw) {
-        throw new AuthenticationError('Incorrect credentials');
-      }
-
+    },
+    // `addUser` resolver adds a new user.
+    addUser: async (parent, { username, email }) => {
+      // Create a new user.
+      const user = await User.create({ username, email });
+      // Sign a token for the user.
       const token = signToken(user);
-
       return { token, user };
     },
-    addThought: async (parent, { thoughtText }, context) => {
-      if (context.user) {
-        const thought = await Thought.create({
-          thoughtText,
-          thoughtAuthor: context.user.username,
+    // `saveBook` resolver saves a book for the current user.
+    saveBook: async (parent, args, context) => {
+      try {
+        // Find the current user.
+        const user = await User.findOne({ _id: context.userId });
+        if (!user) {
+          throw new Error("You must be logged in to save a book");
+        }
+        // Create a new book.
+        const book = await Book.create({
+          bookId: args.bookId,
+          authors: args.authors,
+          description: args.description,
+          title: args.title,
+          image: args.image,
+          link: args.link
         });
-
-        await User.findOneAndUpdate(
-          { _id: context.user._id },
-          { $addToSet: { thoughts: thought._id } }
-        );
-
-        return thought;
+        // Add the book to the user's saved books.
+        user.savedBooks.push(book);
+        user.bookCount++;
+        // Save the user.
+        await user.save();
+        return user;
+      } catch (error) {
+        throw new Error(error);
       }
-      throw new AuthenticationError('You need to be logged in!');
     },
-    addComment: async (parent, { thoughtId, commentText }, context) => {
-      if (context.user) {
-        return Thought.findOneAndUpdate(
-          { _id: thoughtId },
-          {
-            $addToSet: {
-              comments: { commentText, commentAuthor: context.user.username },
-            },
-          },
-          {
-            new: true,
-            runValidators: true,
-          }
-        );
+    // `removeBook` resolver removes a book from the current user's saved books.
+    removeBook: async (parent, args, context) => {
+      try {
+        // Find the current user.
+        const user = await User.findOne({ _id: context.userId });
+        // If the user is not found, throw an error indicating that the user must be logged in to remove a book
+        if (!user) {
+          throw new Error("You must be logged in to remove a book");
+        }
+        // Find a book based on the `bookId` in the argument
+        const book = await Book.findOne({ bookId: args.bookId });
+        // If the book is not found, throw an error indicating that no book was found with that id
+        if (!book) {
+          throw new Error("No book was found with that id");
+        }
+        // Remove the book from the user's saved books list
+        user.savedBooks.pull(book);
+        // Decrement the user's book count
+        user.bookCount--;
+        // Save the user to the database
+        await user.save();
+        // Return the updated user
+        return user;
+      } catch (error) {
+        // If an error occurs, throw a new error with the error message
+        throw new Error(error);
       }
-      throw new AuthenticationError('You need to be logged in!');
-    },
-    removeThought: async (parent, { thoughtId }, context) => {
-      if (context.user) {
-        const thought = await Thought.findOneAndDelete({
-          _id: thoughtId,
-          thoughtAuthor: context.user.username,
-        });
-
-        await User.findOneAndUpdate(
-          { _id: context.user._id },
-          { $pull: { thoughts: thought._id } }
-        );
-
-        return thought;
-      }
-      throw new AuthenticationError('You need to be logged in!');
-    },
-    removeComment: async (parent, { thoughtId, commentId }, context) => {
-      if (context.user) {
-        return Thought.findOneAndUpdate(
-          { _id: thoughtId },
-          {
-            $pull: {
-              comments: {
-                _id: commentId,
-                commentAuthor: context.user.username,
-              },
-            },
-          },
-          { new: true }
-        );
-      }
-      throw new AuthenticationError('You need to be logged in!');
     },
   },
 };
-
-module.exports = resolvers;
